@@ -1,0 +1,15 @@
+{
+  "name": "tradesim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Paper trading for stocks and crypto at real market prices.",
+  "license": "MIT",
+  "workspaces": ["server", "web"],
+  "scripts": {
+    "dev": "npm run dev -w server",
+    "dev:web": "npm run dev -w web",
+    "build": "npm run build -w web",
+    "test": "npm test --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  }
+}
