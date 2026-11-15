@@ -10,8 +10,8 @@ Early and under active development. The plan and the reasoning behind it are in 
 | --- | --- |
 | Server, web app and CI | Done |
 | Postgres schema and migrations | Done |
-| Sign-up and login | Next |
-| Double-entry ledger and wallets | Planned |
+| Sign-up and login | Done |
+| Double-entry ledger and wallets | Next |
 | Live crypto prices | Planned |
 | Market orders with idempotency keys | Planned |
 | Limit, stop-loss and bracket orders | Planned |
