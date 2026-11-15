@@ -14,7 +14,7 @@ const SECRET = "s".repeat(32);
 
 test("a password verifies against its own hash and nothing else", async () => {
   const hash = await hashPassword("correct horse");
-  assert.match(hash, /^scrypt\$32768\$8\$1\$[\w-]{22}\$[\w-]{43}$/);
+  assert.match(hash, /^scrypt\$32768\$8\$3\$[\w-]{22}\$[\w-]{43}$/);
   assert.equal(await verifyPassword("correct horse", hash), true);
   assert.equal(await verifyPassword("correct horsf", hash), false);
   assert.equal(await verifyPassword("correct horse", "not-a-hash"), false);

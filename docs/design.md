@@ -47,7 +47,7 @@ Market data:
 
 ## Auth
 
-Email and password. Passwords are hashed with scrypt (N=2^15, r=8, p=1); the parameters are stored with each hash so they can be raised later. A login for an unknown email still runs a hash, so response times don't reveal which emails have accounts.
+Email and password. Passwords are hashed with scrypt (N=2^15, r=8, p=3, one of the OWASP-recommended settings); the parameters are stored with each hash so they can be raised later. A login for an unknown email still runs a hash, so response times don't reveal which emails have accounts.
 
 Signing in returns a 15-minute HS256 access token, sent as `Authorization: Bearer`, and sets a 30-day refresh token in an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/auth`. The access token lives in memory in the web app, never in `localStorage`, so a script injected into the page can't read a long-lived credential.
 

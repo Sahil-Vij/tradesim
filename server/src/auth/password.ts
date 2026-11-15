@@ -1,8 +1,8 @@
 import { randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from "node:crypto";
 
-// About 50 ms and 32 MiB per hash on a laptop. The parameters are stored with each hash,
-// so they can be raised later without breaking existing passwords.
-const COST = { N: 2 ** 15, r: 8, p: 1 };
+// One of OWASP's recommended settings: 32 MiB and about 150 ms per hash on a laptop.
+// The parameters are stored with each hash, so they can be raised later without breaking existing passwords.
+const COST = { N: 2 ** 15, r: 8, p: 3 };
 const KEY_LENGTH = 32;
 
 function derive(password: string, salt: Buffer, { N, r, p }: typeof COST): Promise<Buffer> {
