@@ -1,5 +1,7 @@
 export type Config = {
   port: number;
+  jwtSecret: string;
+  secureCookies: boolean;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -7,7 +9,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`PORT must be a whole number from 0 to 65535, got "${env.PORT}"`);
   }
-  return { port };
+  const jwtSecret = env.JWT_SECRET ?? "";
+  // HS256 is only as strong as its key; 32 random bytes is what `openssl rand -hex 32` gives.
+  if (jwtSecret.length < 32) {
+    throw new Error("JWT_SECRET must be at least 32 characters. Generate one with: openssl rand -hex 32");
+  }
+  return { port, jwtSecret, secureCookies: env.NODE_ENV === "production" };
 }
 
 export function loadDatabaseUrl(env: NodeJS.ProcessEnv = process.env): string {

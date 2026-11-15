@@ -45,6 +45,14 @@ Market data:
 
 **Holds.** A pending limit, stop or bracket order reserves its cash (or its shares, for a sell) by moving it to a hold account. Cancelling releases it, filling spends it. Pending orders can never spend the same money twice.
 
+## Auth
+
+Email and password. Passwords are hashed with scrypt (N=2^15, r=8, p=3, one of the OWASP-recommended settings); the parameters are stored with each hash so they can be raised later. A login for an unknown email still runs a hash, so response times don't reveal which emails have accounts.
+
+Signing in returns a 15-minute HS256 access token, sent as `Authorization: Bearer`, and sets a 30-day refresh token in an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/auth`. The access token lives in memory in the web app, never in `localStorage`, so a script injected into the page can't read a long-lived credential.
+
+Refresh tokens are random, stored only as a SHA-256 hash, and rotated on every use. Each sign-in starts a token family. If a token that was already rotated is presented again, someone has a copy, so the whole family is revoked and the user signs in again. OTP as a second factor comes later.
+
 ## Orders
 
 - **Idempotency.** `POST /api/orders` requires an `Idempotency-Key` header. The key is unique per user. A repeat with the same key and body returns the original response; the same key with a different body is a `422`.
