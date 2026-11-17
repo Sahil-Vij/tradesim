@@ -1,5 +1,6 @@
 import { Router, type CookieOptions, type RequestHandler, type Response } from "express";
 import type pg from "pg";
+import { openWallets, withTransaction } from "../ledger.ts";
 import { hashPassword, verifyPassword } from "./password.ts";
 import { endSession, rotateSession, startSession } from "./sessions.ts";
 import { REFRESH_TOKEN_DAYS, signAccessToken, verifyAccessToken } from "./tokens.ts";
@@ -66,16 +67,22 @@ export function createAuth({ pool, jwtSecret, secureCookies }: AuthOptions) {
       res.status(400).json({ error: input.error });
       return;
     }
-    const { rows } = await pool.query<{ id: bigint; email: string }>(
-      `INSERT INTO users (email, password_hash) VALUES ($1, $2)
-       ON CONFLICT (email) DO NOTHING RETURNING id, email`,
-      [input.email, await hashPassword(input.password)],
-    );
-    if (!rows[0]) {
+    const passwordHash = await hashPassword(input.password);
+    // The user and their starting balance are created together, so there's never a user without wallets.
+    const user = await withTransaction(pool, async (client) => {
+      const { rows } = await client.query<{ id: bigint; email: string }>(
+        `INSERT INTO users (email, password_hash) VALUES ($1, $2)
+         ON CONFLICT (email) DO NOTHING RETURNING id, email`,
+        [input.email, passwordHash],
+      );
+      if (rows[0]) await openWallets(client, rows[0].id);
+      return rows[0];
+    });
+    if (!user) {
       res.status(409).json({ error: "email_taken" });
       return;
     }
-    await signIn(res, 201, rows[0]);
+    await signIn(res, 201, user);
   });
 
   router.post("/login", async (req, res) => {
