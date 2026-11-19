@@ -7,6 +7,7 @@ import { createApp } from "../src/app.ts";
 import { REFRESH_COOKIE } from "../src/auth/routes.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { createTestPool, skipWithoutDb } from "./db.ts";
+import { offlineRedis } from "./redis.ts";
 
 describe("sign-up and login", { skip: skipWithoutDb }, () => {
   let pool: pg.Pool;
@@ -17,7 +18,7 @@ describe("sign-up and login", { skip: skipWithoutDb }, () => {
   before(async () => {
     ({ pool, drop } = await createTestPool());
     await migrate(pool);
-    server = createApp({ pool, jwtSecret: "j".repeat(32), secureCookies: false }).listen(0);
+    server = createApp({ pool, redis: offlineRedis(), jwtSecret: "j".repeat(32), secureCookies: false }).listen(0);
     await new Promise((resolve) => server.once("listening", resolve));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });

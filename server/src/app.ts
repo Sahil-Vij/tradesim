@@ -1,9 +1,14 @@
 import express, { type ErrorRequestHandler } from "express";
 import { createAuth, type AuthOptions } from "./auth/routes.ts";
+import type { Redis } from "ioredis";
 import { cashWallets } from "./ledger.ts";
+import { PRICE_DECIMALS, STALE_AFTER_MS } from "./prices/price.ts";
+import { latestTicks } from "./prices/store.ts";
 
-export function createApp(options: AuthOptions) {
-  const { pool } = options;
+export type AppOptions = AuthOptions & { redis: Redis; now?: () => number };
+
+export function createApp(options: AppOptions) {
+  const { pool, redis, now = Date.now } = options;
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "100kb" }));
@@ -30,6 +35,24 @@ export function createApp(options: AuthOptions) {
   app.get("/api/wallets", auth.requireAuth, async (_req, res) => {
     const wallets = await cashWallets(pool, res.locals.userId);
     res.json({ wallets: wallets.map((w) => ({ asset: w.asset, balance: String(w.balance), decimals: w.decimals })) });
+  });
+
+  // Public: prices aren't per-user. Same string-plus-decimals shape as wallets.
+  app.get("/api/prices", async (_req, res) => {
+    const at = now();
+    const prices = (await latestTicks(redis)).map((t) => {
+      const ageMs = Math.max(0, at - t.time);
+      return {
+        symbol: t.symbol,
+        quote: "USD",
+        price: String(t.price),
+        decimals: PRICE_DECIMALS,
+        time: new Date(t.time).toISOString(),
+        ageMs,
+        stale: ageMs > STALE_AFTER_MS,
+      };
+    });
+    res.json({ prices });
   });
 
   app.use("/api", (_req, res) => {

@@ -5,6 +5,7 @@ import { after, before, test } from "node:test";
 import pg from "pg";
 import { createApp } from "../src/app.ts";
 import { loadConfig } from "../src/config.ts";
+import { offlineRedis } from "./redis.ts";
 
 let server: Server;
 let base: string;
@@ -13,7 +14,7 @@ const pool = new pg.Pool();
 const JWT_SECRET = "x".repeat(32);
 
 before(async () => {
-  server = createApp({ pool, jwtSecret: JWT_SECRET, secureCookies: false }).listen(0);
+  server = createApp({ pool, redis: offlineRedis(), jwtSecret: JWT_SECRET, secureCookies: false }).listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });

@@ -9,12 +9,15 @@
   "scripts": {
     "dev": "node --watch --env-file-if-exists=../.env src/index.ts",
     "start": "node --env-file-if-exists=../.env src/index.ts",
+    "dev:prices": "node --watch --env-file-if-exists=../.env src/price-worker.ts",
+    "prices": "node --env-file-if-exists=../.env src/price-worker.ts",
     "test": "node --env-file-if-exists=../.env --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "migrate": "node --env-file-if-exists=../.env src/db/migrate-cli.ts"
   },
   "dependencies": {
     "express": "^5.3.0",
+    "ioredis": "^6.0.0",
     "jose": "^6.2.17",
     "pg": "^8.23.1"
   },
@@ -22,6 +25,8 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
-    "typescript": "^7.0.2"
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2",
+    "ws": "^8.23.0"
   }
 }
