@@ -1,5 +1,6 @@
 import express, { type ErrorRequestHandler } from "express";
 import { createAuth, type AuthOptions } from "./auth/routes.ts";
+import { cashWallets } from "./ledger.ts";
 
 export function createApp(options: AuthOptions) {
   const { pool } = options;
@@ -23,6 +24,12 @@ export function createApp(options: AuthOptions) {
       return;
     }
     res.json({ id: String(rows[0].id), email: rows[0].email });
+  });
+
+  // Balances go out as strings in the smallest unit (paise, cents): JSON numbers would lose precision.
+  app.get("/api/wallets", auth.requireAuth, async (_req, res) => {
+    const wallets = await cashWallets(pool, res.locals.userId);
+    res.json({ wallets: wallets.map((w) => ({ asset: w.asset, balance: String(w.balance), decimals: w.decimals })) });
   });
 
   app.use("/api", (_req, res) => {
