@@ -37,7 +37,7 @@ Market data:
 
 ## Money
 
-**Integers only.** Cash is stored in minor units (paise for INR, cents for USD) as `BIGINT`. Quantities are stored in units of 10⁻⁸ so fractional crypto works. Prices are minor units per whole unit. The cost of a trade is `quantity × price / 10⁸`, rounded half up, in one function with its own tests.
+**Integers only.** Cash is stored in minor units (paise for INR, cents for USD) as `BIGINT`. Quantities are stored in units of 10⁻⁸ so fractional crypto works. Prices are also stored in units of 10⁻⁸ of the currency per whole unit: cents are too coarse for a coin like DOGE, which trades near $0.06. The cost of a trade in minor units is `quantity × price / 10¹⁴`, rounded half up, in one function with its own tests.
 
 **Two wallets.** Stocks trade in INR and crypto in USD, as in the brief. A new user gets ₹10,00,000 and $10,000. There is no currency conversion between them.
 
@@ -62,7 +62,7 @@ Refresh tokens are random, stored only as a SHA-256 hash, and rotated on every u
 
 ## Prices and live updates
 
-A price worker holds the Binance stream, writes the latest price for each symbol to Redis, and publishes it on a Redis channel. The WebSocket gateway relays those messages to the browser. Candles come from Binance's REST API for crypto and from Yahoo for stocks, cached in Redis.
+A price worker, run as its own process, holds one Binance mini-ticker stream for all symbols, writes the latest price for each symbol to a Redis hash, and publishes it on a Redis channel. A Lua script does both and drops a tick older than the stored one. The worker reconnects with exponential backoff (1 to 30 seconds, full jitter) when the socket closes or sends nothing for 30 seconds; Binance also closes every connection after 24 hours. `GET /api/prices` returns each price with its age and marks it stale after 10 seconds. The WebSocket gateway relays those messages to the browser. Candles come from Binance's REST API for crypto and from Yahoo for stocks, cached in Redis.
 
 ## Testing
 

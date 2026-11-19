@@ -28,6 +28,7 @@ docker compose up -d     # Postgres and Redis
 npm run migrate          # create or update the tables
 npm run dev              # API on http://localhost:4000
 npm run dev:web          # app on http://localhost:5173, proxies /api to the server
+npm run dev:prices       # live crypto prices from Binance into Redis
 ```
 
 ## Stack
