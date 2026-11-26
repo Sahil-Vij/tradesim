@@ -36,3 +36,10 @@ export async function latestTicks(redis: Redis): Promise<Tick[]> {
     })
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
+
+export async function latestTick(redis: Redis, symbol: string): Promise<Tick | null> {
+  const value = await redis.hget(PRICES_KEY, symbol);
+  if (value === null) return null;
+  const { price, time } = JSON.parse(value) as Stored;
+  return { symbol, price: BigInt(price), time };
+}
