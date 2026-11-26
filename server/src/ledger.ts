@@ -158,6 +158,17 @@ export async function cashWallets(pool: pg.Pool, userId: bigint): Promise<Wallet
   return rows.map((row) => ({ ...row, decimals: decimalsOf(row.asset) }));
 }
 
+export type Holding = { asset: string; quantity: bigint; decimals: number };
+
+/** The coins a user holds, leaving out ones they've sold down to zero. */
+export async function holdings(pool: pg.Pool, userId: bigint): Promise<Holding[]> {
+  const { rows } = await pool.query<{ asset: string; balance: bigint }>(
+    "SELECT asset, balance FROM accounts WHERE user_id = $1 AND kind = 'holding' AND balance > 0 ORDER BY asset",
+    [userId],
+  );
+  return rows.map((row) => ({ asset: row.asset, quantity: row.balance, decimals: decimalsOf(row.asset) }));
+}
+
 /** User accounts whose cached balance differs from the sum of their lines. Should always be empty. */
 export async function driftedAccounts(
   client: pg.ClientBase,
