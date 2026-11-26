@@ -64,13 +64,13 @@ export function CandleChart({ symbol, name, price }: { symbol: string; name: str
       autoSize: true,
       layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: C.text, fontFamily: "IBM Plex Sans", attributionLogo: false },
       grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
-      rightPriceScale: { borderColor: C.rule, scaleMargins: { top: 0.08, bottom: 0.24 } },
+      rightPriceScale: { borderColor: C.rule, scaleMargins: { top: 0.05, bottom: 0.16 } },
       timeScale: {
         borderColor: C.rule,
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 6,
-        barSpacing: 9,
+        barSpacing: 12,
         tickMarkFormatter: (time: unknown, kind: TickMarkType) => tickLabel(time as number, kind),
       },
       localization: {
@@ -91,7 +91,7 @@ export function CandleChart({ symbol, name, price }: { symbol: string; name: str
       wickDownColor: C.loss,
     });
     volume.current = c.addSeries(HistogramSeries, { priceScaleId: "volume", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
-    c.priceScale("volume").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+    c.priceScale("volume").applyOptions({ scaleMargins: { top: 0.87, bottom: 0 } });
     c.subscribeCrosshairMove((param) => {
       const t = param.time as number | undefined;
       setHover(t === undefined ? null : (bars.current.find((b) => b.time === t) ?? null));
@@ -118,7 +118,7 @@ export function CandleChart({ symbol, name, price }: { symbol: string; name: str
         candles.current.setData(loaded.map(candleBar));
         volume.current!.setData(loaded.map(volumeBar));
         // Open on the most recent candles at a readable width; older ones are a scroll away.
-        chart.current!.timeScale().applyOptions({ barSpacing: 9 });
+        chart.current!.timeScale().applyOptions({ barSpacing: 12 });
         chart.current!.timeScale().scrollToRealTime();
         setLatest(loaded.at(-1) ?? null);
         setStatus("ready");
@@ -201,7 +201,7 @@ export function CandleChart({ symbol, name, price }: { symbol: string; name: str
         )}
       </dl>
 
-      <div className="relative h-[22rem]">
+      <div className="relative h-[26rem] lg:h-[30rem]">
         <div
           ref={box}
           className={`absolute inset-0 transition-[opacity,filter] duration-500 ease-out ${
