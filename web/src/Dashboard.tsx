@@ -191,7 +191,7 @@ export function Dashboard() {
             symbol={selected}
             name={names[selected] ?? selected}
             price={priceOf(selected)}
-            cash={usd}
+            cash={wallets ? usd : null}
             held={heldOf(selected)}
             onFilled={onFilled}
           />
