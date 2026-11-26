@@ -51,7 +51,7 @@ test("signed out, it offers sign-up and explains what went wrong", async () => {
   render(<App />);
   fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "a@example.com" } });
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "long enough" } });
-  fireEvent.click(screen.getByRole("button", { name: /Start with/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Create account" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("already an account");
 });
 
@@ -95,7 +95,9 @@ test("a reload keeps you signed in and shows balances and live prices", async ()
   render(<App />);
   expect(await screen.findByText("me@example.com")).toBeInTheDocument();
   const balances = screen.getByRole("region", { name: "Balances" });
-  expect(await within(balances).findByText("$10,000.00")).toBeInTheDocument();
+  // Portfolio value and cash are both $10,000 before any trade.
+  expect(await within(balances).findAllByText("$10,000.00")).toHaveLength(2);
+  expect(within(balances).getByText("Since you started")).toBeInTheDocument();
   expect(within(balances).getByText("₹10,00,000.00")).toBeInTheDocument();
   const markets = screen.getByRole("region", { name: "Markets" });
   expect(await within(markets).findByText("$60,000.00")).toBeInTheDocument();
@@ -164,7 +166,21 @@ test("an expired access token is refreshed once and the request retried", async 
         : json({ wallets: [{ asset: "USD", balance: "1000000", decimals: 2 }] }),
   });
   render(<App />);
-  expect(await within(await screen.findByRole("region", { name: "Balances" })).findByText("$10,000.00")).toBeInTheDocument();
+  expect(await within(await screen.findByRole("region", { name: "Balances" })).findAllByText("$10,000.00")).toHaveLength(2);
   expect(calls.filter((c) => c.path === "/api/auth/refresh").length).toBe(2); // page load, then the 401
   setAccessToken(null);
+});
+
+test("profit and loss is measured from the $10,000 start, at live prices", async () => {
+  signedInServer({
+    "GET /api/wallets": () => json({ wallets: [{ asset: "USD", balance: "700000", decimals: 2 }] }),
+    "GET /api/holdings": () => json({ holdings: [{ asset: "BTC", quantity: "5000000", decimals: 8 }] }),
+    "GET /api/prices": () => json({ prices: [price("BTC", "6100000000000")] }), // BTC up to $61,000
+  });
+  render(<App />);
+  const balances = await screen.findByRole("region", { name: "Balances" });
+  // $7,000 cash + 0.05 BTC × $61,000 = $10,050.
+  expect(await within(balances).findByText("$10,050.00")).toBeInTheDocument();
+  expect(within(balances).getByText("+$50.00")).toBeInTheDocument();
+  expect(balances).toHaveTextContent("+0.50%");
 });

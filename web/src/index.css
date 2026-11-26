@@ -1,1 +1,83 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-condensed: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, sans-serif;
+
+  --color-ink: #0d1321;
+  --color-slate: #161f33;
+  --color-raised: #1c2740;
+  --color-rule: #26324d;
+  --color-paper: #e9edf5;
+  --color-fog: #8c98b3;
+  --color-saffron: #f5b53f;
+  --color-gain: #2bd38f;
+  --color-loss: #ff5c6c;
+
+  --animate-rise: rise 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-glow-gain: glow-gain 1200ms ease-out;
+  --animate-glow-loss: glow-loss 1200ms ease-out;
+  --animate-settle: settle 1600ms ease-out;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+/* A price that just moved tints its cell, then fades back. */
+@keyframes glow-gain {
+  from {
+    background-color: color-mix(in oklab, var(--color-gain) 16%, transparent);
+  }
+}
+@keyframes glow-loss {
+  from {
+    background-color: color-mix(in oklab, var(--color-loss) 16%, transparent);
+  }
+}
+/* A holding that an order just changed. */
+@keyframes settle {
+  from {
+    background-color: color-mix(in oklab, var(--color-saffron) 14%, transparent);
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    background: var(--color-ink);
+  }
+  body {
+    font-feature-settings: "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-saffron);
+    outline-offset: 2px;
+  }
+}
+
+/* Odometer digits: each digit is a column of 0-9 moved up or down. */
+.roll-digit {
+  display: inline-block;
+  height: 1lh;
+  overflow: hidden;
+  vertical-align: top;
+}
+.roll-strip {
+  display: flex;
+  flex-direction: column;
+  transition: transform 550ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}

@@ -34,11 +34,17 @@ export function AuthForm({ onSignedIn }: { onSignedIn: (email: string) => void }
   }
 
   const input =
-    "w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 outline-none focus:border-emerald-500";
+    "w-full rounded-md border border-rule bg-ink px-3 py-2.5 text-paper outline-none transition-colors placeholder:text-fog/60 focus:border-saffron";
 
   return (
-    <form onSubmit={submit} className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 p-6 lg:w-96">
-      <div className="mb-5 flex rounded-md bg-zinc-800 p-1 text-sm" role="tablist">
+    <form onSubmit={submit} className="w-full rounded-xl border border-rule bg-slate p-6 shadow-2xl shadow-black/30">
+      <div className="relative mb-6 grid grid-cols-2 rounded-md bg-ink p-1 text-sm" role="tablist">
+        <span
+          aria-hidden="true"
+          className={`absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded bg-raised transition-transform duration-300 ease-out ${
+            mode === "login" ? "translate-x-full" : ""
+          }`}
+        />
         {(["signup", "login"] as const).map((m) => (
           <button
             key={m}
@@ -49,13 +55,13 @@ export function AuthForm({ onSignedIn }: { onSignedIn: (email: string) => void }
               setMode(m);
               setError(null);
             }}
-            className={`flex-1 rounded py-1.5 ${mode === m ? "bg-zinc-950 text-zinc-100" : "text-zinc-400"}`}
+            className={`relative rounded py-1.5 transition-colors ${mode === m ? "text-paper" : "text-fog hover:text-paper"}`}
           >
             {m === "signup" ? "Create account" : "Log in"}
           </button>
         ))}
       </div>
-      <label className="mb-3 block text-sm text-zinc-400">
+      <label className="mb-3 block text-sm text-fog">
         Email
         <input
           className={`${input} mt-1`}
@@ -66,7 +72,7 @@ export function AuthForm({ onSignedIn }: { onSignedIn: (email: string) => void }
           required
         />
       </label>
-      <label className="mb-5 block text-sm text-zinc-400">
+      <label className="mb-5 block text-sm text-fog">
         Password
         <input
           className={`${input} mt-1`}
@@ -77,17 +83,18 @@ export function AuthForm({ onSignedIn }: { onSignedIn: (email: string) => void }
           required
         />
       </label>
+      {mode === "signup" && <p className="-mt-2 mb-5 text-xs text-fog">At least 8 characters.</p>}
       {error && (
-        <p role="alert" className="mb-4 text-sm text-rose-400">
+        <p role="alert" className="mb-4 rounded-md bg-loss/10 px-3 py-2 text-sm text-loss">
           {error}
         </p>
       )}
       <button
         type="submit"
         disabled={busy}
-        className="w-full rounded-md bg-emerald-500 py-2 font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
+        className="w-full rounded-md bg-saffron py-2.5 font-semibold text-ink transition-[filter,transform] hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
       >
-        {busy ? "One moment…" : mode === "signup" ? "Start with ₹10,00,000 and $10,000" : "Log in"}
+        {busy ? "One moment…" : mode === "signup" ? "Create account" : "Log in"}
       </button>
     </form>
   );
