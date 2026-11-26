@@ -5,11 +5,18 @@ import { cashWallets, holdings } from "./ledger.ts";
 import { ordersRouter } from "./orders/routes.ts";
 import { PRICE_DECIMALS, STALE_AFTER_MS } from "./prices/price.ts";
 import { latestTicks } from "./prices/store.ts";
+import { CandlesUnavailableError, getCandles, INTERVALS } from "./prices/candles.ts";
+import { TRADABLE } from "./orders/orders.ts";
 
-export type AppOptions = AuthOptions & { redis: Redis; now?: () => number };
+export type AppOptions = AuthOptions & {
+  redis: Redis;
+  now?: () => number;
+  /** Where candles come from; tests point it at a local fake. */
+  binanceRestUrl?: string;
+};
 
 export function createApp(options: AppOptions) {
-  const { pool, redis, now = Date.now } = options;
+  const { pool, redis, now = Date.now, binanceRestUrl } = options;
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "100kb" }));
@@ -61,6 +68,36 @@ export function createApp(options: AppOptions) {
       };
     });
     res.json({ prices });
+  });
+
+  // Public, like prices. GET /api/candles?symbol=BTC&interval=1m&limit=300
+  app.get("/api/candles", async (req, res) => {
+    const symbol = String(req.query.symbol ?? "");
+    const interval = String(req.query.interval ?? "1m");
+    const limit = req.query.limit === undefined ? 300 : Number(req.query.limit);
+    if (!TRADABLE.has(symbol)) return void res.status(400).json({ error: "unknown_symbol" });
+    if (!Object.hasOwn(INTERVALS, interval)) return void res.status(400).json({ error: "invalid_interval" });
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) return void res.status(400).json({ error: "invalid_limit" });
+    try {
+      const candles = await getCandles(redis, symbol, interval, limit, binanceRestUrl);
+      res.json({
+        symbol,
+        interval,
+        priceDecimals: PRICE_DECIMALS,
+        candles: candles.map((c) => ({
+          time: c.time,
+          open: String(c.open),
+          high: String(c.high),
+          low: String(c.low),
+          close: String(c.close),
+          volume: String(c.volume),
+        })),
+      });
+    } catch (err) {
+      if (!(err instanceof CandlesUnavailableError)) throw err;
+      console.error(err.message);
+      res.set("retry-after", "5").status(502).json({ error: "candles_unavailable" });
+    }
   });
 
   app.use("/api", (_req, res) => {
