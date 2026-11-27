@@ -5,23 +5,40 @@ import { InsufficientFundsError, withTransaction } from "../ledger.ts";
 import { PRICE_DECIMALS, STALE_AFTER_MS } from "../prices/price.ts";
 import { latestTick } from "../prices/store.ts";
 import { claimKey, requestHash, saveResponse, validKey, type Saved } from "./idempotency.ts";
-import { fillMarketOrder, OrderTooSmallError, TRADABLE, type FilledOrder, type MarketOrder } from "./orders.ts";
+import { cancelOrder, OrderNotOpenError, placeLimitOrder, type LimitOrder } from "./limit.ts";
+import { fillMarketOrder, OrderTooSmallError, TRADABLE, type MarketOrder, type Order } from "./orders.ts";
 
 export type OrderOptions = { pool: pg.Pool; redis: Redis; requireAuth: RequestHandler; now?: () => number };
 
 // Quantities come in as whole numbers of 10^-8 of a coin, as strings, like every amount in the API.
-const QUANTITY = /^[1-9]\d{0,17}$/;
+// Limit prices likewise, in 10^-8 of a dollar per coin.
+const AMOUNT = /^[1-9]\d{0,17}$/;
+const ORDER_ID = /^[1-9]\d{0,17}$/;
 
-function parseOrder(body: unknown): MarketOrder | { error: string } {
-  const { symbol, side, type = "market", quantity } = (body ?? {}) as Record<string, unknown>;
-  if (type !== "market") return { error: "unsupported_order_type" };
+type Parsed = ({ type: "market" } & MarketOrder) | ({ type: "limit" } & LimitOrder);
+
+function parseOrder(body: unknown): Parsed | { error: string } {
+  const { symbol, side, type = "market", quantity, limitPrice } = (body ?? {}) as Record<string, unknown>;
+  if (type !== "market" && type !== "limit") return { error: "unsupported_order_type" };
   if (typeof symbol !== "string" || !TRADABLE.has(symbol)) return { error: "unknown_symbol" };
   if (side !== "buy" && side !== "sell") return { error: "invalid_side" };
-  if (typeof quantity !== "string" || !QUANTITY.test(quantity)) return { error: "invalid_quantity" };
-  return { symbol, side, quantity: BigInt(quantity) };
+  if (typeof quantity !== "string" || !AMOUNT.test(quantity)) return { error: "invalid_quantity" };
+  if (type === "market") return { type, symbol, side, quantity: BigInt(quantity) };
+  if (typeof limitPrice !== "string" || !AMOUNT.test(limitPrice)) return { error: "invalid_limit_price" };
+  return { type, symbol, side, quantity: BigInt(quantity), limitPrice: BigInt(limitPrice) };
 }
 
-function orderJson(order: FilledOrder) {
+/** The fields that make two requests "the same order", for the idempotency check. */
+function hashOf(order: Parsed): Buffer {
+  const fields: Record<string, string> = { symbol: order.symbol, side: order.side, quantity: String(order.quantity) };
+  // Market orders keep the fields they always had, so keys saved before limit orders still match.
+  if (order.type === "limit") Object.assign(fields, { type: "limit", limitPrice: String(order.limitPrice) });
+  return requestHash(fields);
+}
+
+const str = (n: bigint | null) => (n === null ? null : String(n));
+
+function orderJson(order: Order) {
   return {
     id: String(order.id),
     symbol: order.symbol,
@@ -30,11 +47,13 @@ function orderJson(order: FilledOrder) {
     status: order.status,
     quantity: String(order.quantity),
     quantityDecimals: 8,
-    price: String(order.price),
+    ...(order.type === "limit" ? { limitPrice: str(order.limitPrice) } : {}),
+    price: str(order.price),
     priceDecimals: PRICE_DECIMALS,
-    total: String(order.total),
+    total: str(order.total),
     currency: order.currency,
     createdAt: order.createdAt.toISOString(),
+    ...(order.type === "limit" ? { closedAt: order.closedAt?.toISOString() ?? null } : {}),
   };
 }
 
@@ -54,23 +73,31 @@ export function ordersRouter({ pool, redis, requireAuth, now = Date.now }: Order
       return;
     }
 
-    // Read the price outside the transaction: it comes from Redis, and holding row locks while
-    // waiting on another service makes every other order for this user wait too.
-    const tick = await latestTick(redis, order.symbol);
-    const stale = !tick || now() - tick.time > STALE_AFTER_MS;
+    // A market order needs a fresh price. Read it outside the transaction: it comes from Redis,
+    // and holding row locks while waiting on another service makes every other order for this
+    // user wait too. A limit order doesn't: it waits for the price to come to it.
+    let price: bigint | null = null;
+    if (order.type === "market") {
+      const tick = await latestTick(redis, order.symbol);
+      if (tick && now() - tick.time <= STALE_AFTER_MS) price = tick.price;
+    }
 
-    const hash = requestHash({ symbol: order.symbol, side: order.side, quantity: String(order.quantity) });
     let result: Saved & { replayed?: boolean };
     try {
       result = await withTransaction(pool, async (client) => {
-        const claim = await claimKey(client, userId, key, hash);
+        const claim = await claimKey(client, userId, key, hashOf(order));
         if (claim.kind === "replay") return { ...claim.saved, replayed: true };
         if (claim.kind === "mismatch") return { statusCode: 422, body: { error: "idempotency_key_reused" } };
         // Failures below throw, so the transaction (and the claimed key) rolls back and a retry
-        // with the same key runs again. Only a fill is saved.
-        if (stale) throw new StalePriceError();
-        const filled = await fillMarketOrder(client, userId, order, tick!.price);
-        const saved = { statusCode: 201, body: { order: orderJson(filled) } };
+        // with the same key runs again. Only an order that was placed is saved.
+        let placed: Order;
+        if (order.type === "limit") {
+          placed = await placeLimitOrder(client, userId, order);
+        } else {
+          if (price === null) throw new StalePriceError();
+          placed = await fillMarketOrder(client, userId, order, price);
+        }
+        const saved = { statusCode: 201, body: { order: orderJson(placed) } };
         await saveResponse(client, userId, key, saved);
         return saved;
       });
@@ -91,6 +118,29 @@ export function ordersRouter({ pool, redis, requireAuth, now = Date.now }: Order
     }
     if (result.replayed) res.set("idempotent-replayed", "true");
     res.status(result.statusCode).json(result.body);
+  });
+
+  // Cancelling twice is harmless: the second one gets 409 with the order as it now is.
+  router.delete("/:id", requireAuth, async (req, res) => {
+    const id = String(req.params.id);
+    if (!ORDER_ID.test(id)) {
+      res.status(404).json({ error: "order_not_found" });
+      return;
+    }
+    try {
+      const order = await withTransaction(pool, (client) => cancelOrder(client, res.locals.userId, BigInt(id)));
+      if (!order) {
+        res.status(404).json({ error: "order_not_found" });
+        return;
+      }
+      res.json({ order: orderJson(order) });
+    } catch (err) {
+      if (err instanceof OrderNotOpenError) {
+        res.status(409).json({ error: "order_not_open", order: orderJson(err.order) });
+        return;
+      }
+      throw err;
+    }
   });
 
   return router;

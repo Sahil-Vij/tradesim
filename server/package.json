@@ -11,11 +11,14 @@
     "start": "node --env-file-if-exists=../.env src/index.ts",
     "dev:prices": "node --watch --env-file-if-exists=../.env src/price-worker.ts",
     "prices": "node --env-file-if-exists=../.env src/price-worker.ts",
+    "dev:orders": "node --watch --env-file-if-exists=../.env src/order-worker.ts",
+    "orders": "node --env-file-if-exists=../.env src/order-worker.ts",
     "test": "node --env-file-if-exists=../.env --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "migrate": "node --env-file-if-exists=../.env src/db/migrate-cli.ts"
   },
   "dependencies": {
+    "bullmq": "^6.7.10",
     "express": "^5.3.0",
     "ioredis": "^6.0.0",
     "jose": "^6.2.17",
