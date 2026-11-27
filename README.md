@@ -14,7 +14,8 @@ Early and under active development. The plan and the reasoning behind it are in 
 | Double-entry ledger and wallets | Next |
 | Live crypto prices | Planned |
 | Market orders with idempotency keys | Planned |
-| Limit, stop-loss and bracket orders | Planned |
+| Limit orders | Done |
+| Stop-loss and bracket orders | Planned |
 | Dashboard, charts, watchlists and alerts | Planned |
 
 ## Run it
@@ -29,6 +30,7 @@ npm run migrate          # create or update the tables
 npm run dev              # API on http://localhost:4000
 npm run dev:web          # app on http://localhost:5173, proxies /api to the server
 npm run dev:prices       # live crypto prices from Binance into Redis
+npm run dev:orders       # fills limit orders as prices move
 ```
 
 ## Stack

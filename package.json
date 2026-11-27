@@ -12,6 +12,7 @@
     "dev": "npm run dev -w server",
     "dev:web": "npm run dev -w web",
     "dev:prices": "npm run dev:prices -w server",
+    "dev:orders": "npm run dev:orders -w server",
     "migrate": "npm run migrate -w server",
     "build": "npm run build -w web",
     "test": "npm test --workspaces",

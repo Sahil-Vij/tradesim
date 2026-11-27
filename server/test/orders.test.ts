@@ -193,7 +193,7 @@ describe("POST /api/orders", { skip }, () => {
       [{ ...oneBtc, quantity: "-5" }, "invalid_quantity"],
       [{ ...oneBtc, quantity: "1.5" }, "invalid_quantity"],
       [{ ...oneBtc, quantity: "1".repeat(19) }, "invalid_quantity"],
-      [{ ...oneBtc, type: "limit" }, "unsupported_order_type"],
+      [{ ...oneBtc, type: "stop" }, "unsupported_order_type"],
     ];
     for (const [body, error] of cases) {
       const res = await order(token, body);
