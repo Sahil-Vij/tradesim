@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError, type Order } from "./api.ts";
 import type { LivePrice } from "./usePrices.ts";
 import { formatPrice, formatUnits, formatUsd, maxQuantity, orderTotal, parseAmount } from "./money.ts";
+import { RollingNumber } from "./RollingNumber.tsx";
 
 const messages: Record<string, string> = {
   insufficient_funds: "Not enough dollars for this order.",
@@ -12,17 +13,18 @@ const messages: Record<string, string> = {
 
 type Props = {
   symbol: string;
+  name: string;
   price: LivePrice | undefined;
   cash: bigint;
   held: bigint;
   onFilled: (order: Order) => void;
 };
 
-export function TradePanel({ symbol, price, cash, held, onFilled }: Props) {
+export function TradePanel({ symbol, name, price, cash, held, onFilled }: Props) {
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string; n: number } | null>(null);
   // One key per order the person means to place. Clicking twice, or retrying after a network
   // error, sends the same key, so the server places it once. A new order gets a new key.
   const [key, setKey] = useState(() => crypto.randomUUID());
@@ -70,6 +72,7 @@ export function TradePanel({ symbol, price, cash, held, onFilled }: Props) {
       const verb = order.side === "buy" ? "Bought" : "Sold";
       setMessage({
         kind: "ok",
+        n: Date.now(),
         text: `${verb} ${formatUnits(order.quantity, 8)} ${order.symbol} at ${formatPrice(order.price)} for ${formatUsd(order.total)}.`,
       });
       setAmount("");
@@ -77,81 +80,122 @@ export function TradePanel({ symbol, price, cash, held, onFilled }: Props) {
     } catch (err) {
       const text = err instanceof ApiError ? (messages[err.code] ?? "The order didn't go through.") : null;
       // A network error might mean the order did go through. Keep the key so trying again is safe.
-      setMessage({ kind: "error", text: text ?? "Lost connection. Press the button again; it won't order twice." });
+      setMessage({ kind: "error", n: Date.now(), text: text ?? "Lost connection. Press the button again; it won't order twice." });
     } finally {
       setBusy(false);
     }
   }
 
-  const tab = (s: "buy" | "sell") =>
-    `flex-1 rounded py-1.5 text-sm font-medium ${
-      side === s ? (s === "buy" ? "bg-emerald-500 text-zinc-950" : "bg-rose-500 text-zinc-950") : "text-zinc-400"
-    }`;
+  const buying = side === "buy";
 
   return (
-    <form onSubmit={submit} className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5" aria-label="Trade">
-      <div className="mb-4 flex items-baseline justify-between">
-        <h2 className="text-lg font-semibold">{symbol}</h2>
-        <span className="font-mono text-sm text-zinc-400">{unitPrice ? formatPrice(unitPrice) : "—"}</span>
+    <form onSubmit={submit} className="rounded-xl border border-rule bg-slate p-5" aria-label="Trade">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">{symbol}</h2>
+          <p className="text-sm text-fog">{name}</p>
+        </div>
+        <div className="text-right">
+          <div
+            className={`font-condensed text-xl font-medium ${
+              price?.direction === "up" ? "text-gain" : price?.direction === "down" ? "text-loss" : ""
+            }`}
+          >
+            {unitPrice ? <RollingNumber value={formatPrice(unitPrice)} /> : "—"}
+          </div>
+          {price?.stale && <p className="text-xs text-saffron">Price is out of date</p>}
+        </div>
       </div>
-      <div className="mb-4 flex rounded-md bg-zinc-800 p-1">
-        <button type="button" className={tab("buy")} onClick={() => setSide("buy")} aria-pressed={side === "buy"}>
-          Buy
-        </button>
-        <button type="button" className={tab("sell")} onClick={() => setSide("sell")} aria-pressed={side === "sell"}>
-          Sell
-        </button>
-      </div>
-      <label className="block text-sm text-zinc-400">
-        Amount ({symbol})
-        <input
-          inputMode="decimal"
-          placeholder="0.00"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-zinc-100 outline-none focus:border-emerald-500"
+
+      <div className="relative mt-5 grid grid-cols-2 rounded-md bg-ink p-1">
+        <span
+          aria-hidden="true"
+          className={`absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded transition-[transform,background-color] duration-300 ease-out ${
+            buying ? "bg-gain" : "translate-x-full bg-loss"
+          }`}
         />
+        {(["buy", "sell"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setSide(s)}
+            aria-pressed={side === s}
+            className={`relative rounded py-1.5 text-sm font-semibold transition-colors ${
+              side === s ? "text-ink" : "text-fog hover:text-paper"
+            }`}
+          >
+            {s === "buy" ? "Buy" : "Sell"}
+          </button>
+        ))}
+      </div>
+
+      <label className="mt-5 block text-sm text-fog">
+        Amount of {symbol}
+        <div className="mt-1.5 flex items-center rounded-md border border-rule bg-ink transition-colors focus-within:border-saffron">
+          <input
+            inputMode="decimal"
+            placeholder="0.00"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="w-full bg-transparent px-3 py-2.5 text-lg text-paper outline-none placeholder:text-fog/50"
+          />
+          <span className="pr-3 text-sm text-fog">{symbol}</span>
+        </div>
       </label>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-2 grid grid-cols-3 gap-2">
         {[25n, 50n, 100n].map((f) => (
           <button
             key={String(f)}
             type="button"
             onClick={() => fill(f)}
-            className="flex-1 rounded border border-zinc-700 py-1 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+            className="rounded-md border border-rule py-1 text-xs text-fog transition-colors hover:border-fog hover:text-paper active:bg-raised"
           >
             {f === 100n ? "Max" : `${f}%`}
           </button>
         ))}
       </div>
-      <dl className="mt-4 space-y-1 text-sm">
-        <div className="flex justify-between text-zinc-400">
-          <dt>{side === "buy" ? "Available" : "You hold"}</dt>
-          <dd className="font-mono">{side === "buy" ? formatUsd(cash) : `${formatUnits(held, 8)} ${symbol}`}</dd>
+
+      <dl className="mt-5 space-y-2 border-t border-rule pt-4 text-sm">
+        <div className="flex justify-between text-fog">
+          <dt>{buying ? "Cash available" : "You hold"}</dt>
+          <dd>{buying ? <RollingNumber value={formatUsd(cash)} /> : `${formatUnits(held, 8)} ${symbol}`}</dd>
         </div>
-        <div className="flex justify-between">
-          <dt className="text-zinc-400">{side === "buy" ? "Estimated cost" : "Estimated proceeds"}</dt>
-          <dd className="font-mono" data-testid="estimate">
-            {total !== null ? formatUsd(total) : "—"}
+        <div className="flex items-baseline justify-between">
+          <dt className="text-fog">{buying ? "You pay about" : "You get about"}</dt>
+          <dd className="text-lg font-semibold" data-testid="estimate">
+            {total !== null ? <RollingNumber value={formatUsd(total)} /> : "—"}
           </dd>
         </div>
       </dl>
-      {problem && <p className="mt-3 text-sm text-amber-400">{problem}</p>}
-      {message && (
-        <p role={message.kind === "error" ? "alert" : "status"} className={`mt-3 text-sm ${message.kind === "ok" ? "text-emerald-400" : "text-rose-400"}`}>
-          {message.text}
-        </p>
-      )}
+
+      <div className="min-h-6 mt-3" aria-live="polite">
+        {problem ? (
+          <p className="text-sm text-saffron">{problem}</p>
+        ) : message ? (
+          <p
+            key={message.n}
+            role={message.kind === "error" ? "alert" : "status"}
+            className={`animate-rise flex gap-2 rounded-md px-3 py-2 text-sm ${
+              message.kind === "ok" ? "bg-gain/10 text-gain" : "bg-loss/10 text-loss"
+            }`}
+          >
+            <span aria-hidden="true">{message.kind === "ok" ? "✓" : "!"}</span>
+            {message.text}
+          </p>
+        ) : null}
+      </div>
+
       <button
         type="submit"
         disabled={busy || !quantity || problem !== null}
-        className={`mt-4 w-full rounded-md py-2 font-medium text-zinc-950 disabled:opacity-40 ${
-          side === "buy" ? "bg-emerald-500 hover:bg-emerald-400" : "bg-rose-500 hover:bg-rose-400"
+        className={`mt-3 flex w-full items-center justify-center gap-2 rounded-md py-2.5 font-semibold text-ink transition-[filter,transform,opacity] hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100 ${
+          buying ? "bg-gain" : "bg-loss"
         }`}
       >
-        {busy ? "Placing order…" : `${side === "buy" ? "Buy" : "Sell"} ${symbol} at market`}
+        {busy && <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/30 border-t-ink" aria-hidden="true" />}
+        {busy ? "Placing order" : `${buying ? "Buy" : "Sell"} ${symbol} at market`}
       </button>
-      <p className="mt-2 text-xs text-zinc-500">Fills at the last price. No fees or slippage.</p>
+      <p className="mt-2 text-center text-xs text-fog">Fills at the last price, with no fees or slippage.</p>
     </form>
   );
 }
