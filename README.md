@@ -14,8 +14,8 @@ Early and under active development. The plan and the reasoning behind it are in 
 | Double-entry ledger and wallets | Next |
 | Live crypto prices | Planned |
 | Market orders with idempotency keys | Planned |
-| Limit orders | Done |
-| Stop-loss and bracket orders | Planned |
+| Limit and stop-loss orders | Done |
+| Bracket orders | Planned |
 | Dashboard, charts, watchlists and alerts | Planned |
 
 ## Run it

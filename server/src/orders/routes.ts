@@ -5,25 +5,31 @@ import { InsufficientFundsError, withTransaction } from "../ledger.ts";
 import { PRICE_DECIMALS, STALE_AFTER_MS } from "../prices/price.ts";
 import { latestTick } from "../prices/store.ts";
 import { claimKey, requestHash, saveResponse, validKey, type Saved } from "./idempotency.ts";
-import { cancelOrder, OrderNotOpenError, placeLimitOrder, type LimitOrder } from "./limit.ts";
+import { cancelOrder, OrderNotOpenError, placePendingOrder, type PendingOrder } from "./pending.ts";
 import { fillMarketOrder, OrderTooSmallError, TRADABLE, type MarketOrder, type Order } from "./orders.ts";
 
 export type OrderOptions = { pool: pg.Pool; redis: Redis; requireAuth: RequestHandler; now?: () => number };
 
 // Quantities come in as whole numbers of 10^-8 of a coin, as strings, like every amount in the API.
-// Limit prices likewise, in 10^-8 of a dollar per coin.
+// Limit and stop prices likewise, in 10^-8 of a dollar per coin.
 const AMOUNT = /^[1-9]\d{0,17}$/;
 const ORDER_ID = /^[1-9]\d{0,17}$/;
 
-type Parsed = ({ type: "market" } & MarketOrder) | ({ type: "limit" } & LimitOrder);
+type Parsed = ({ type: "market" } & MarketOrder) | PendingOrder;
 
 function parseOrder(body: unknown): Parsed | { error: string } {
-  const { symbol, side, type = "market", quantity, limitPrice } = (body ?? {}) as Record<string, unknown>;
-  if (type !== "market" && type !== "limit") return { error: "unsupported_order_type" };
+  const { symbol, side, type = "market", quantity, limitPrice, stopPrice } = (body ?? {}) as Record<string, unknown>;
+  if (type !== "market" && type !== "limit" && type !== "stop") return { error: "unsupported_order_type" };
   if (typeof symbol !== "string" || !TRADABLE.has(symbol)) return { error: "unknown_symbol" };
   if (side !== "buy" && side !== "sell") return { error: "invalid_side" };
   if (typeof quantity !== "string" || !AMOUNT.test(quantity)) return { error: "invalid_quantity" };
   if (type === "market") return { type, symbol, side, quantity: BigInt(quantity) };
+  if (type === "stop") {
+    // A stop buy would fill at an unknown price, so there's no amount of cash to hold for it.
+    if (side !== "sell") return { error: "stop_orders_are_sells" };
+    if (typeof stopPrice !== "string" || !AMOUNT.test(stopPrice)) return { error: "invalid_stop_price" };
+    return { type, symbol, side, quantity: BigInt(quantity), stopPrice: BigInt(stopPrice) };
+  }
   if (typeof limitPrice !== "string" || !AMOUNT.test(limitPrice)) return { error: "invalid_limit_price" };
   return { type, symbol, side, quantity: BigInt(quantity), limitPrice: BigInt(limitPrice) };
 }
@@ -33,6 +39,7 @@ function hashOf(order: Parsed): Buffer {
   const fields: Record<string, string> = { symbol: order.symbol, side: order.side, quantity: String(order.quantity) };
   // Market orders keep the fields they always had, so keys saved before limit orders still match.
   if (order.type === "limit") Object.assign(fields, { type: "limit", limitPrice: String(order.limitPrice) });
+  if (order.type === "stop") Object.assign(fields, { type: "stop", stopPrice: String(order.stopPrice) });
   return requestHash(fields);
 }
 
@@ -48,12 +55,13 @@ function orderJson(order: Order) {
     quantity: String(order.quantity),
     quantityDecimals: 8,
     ...(order.type === "limit" ? { limitPrice: str(order.limitPrice) } : {}),
+    ...(order.type === "stop" ? { stopPrice: str(order.stopPrice) } : {}),
     price: str(order.price),
     priceDecimals: PRICE_DECIMALS,
     total: str(order.total),
     currency: order.currency,
     createdAt: order.createdAt.toISOString(),
-    ...(order.type === "limit" ? { closedAt: order.closedAt?.toISOString() ?? null } : {}),
+    ...(order.type !== "market" ? { closedAt: order.closedAt?.toISOString() ?? null } : {}),
   };
 }
 
@@ -75,7 +83,7 @@ export function ordersRouter({ pool, redis, requireAuth, now = Date.now }: Order
 
     // A market order needs a fresh price. Read it outside the transaction: it comes from Redis,
     // and holding row locks while waiting on another service makes every other order for this
-    // user wait too. A limit order doesn't: it waits for the price to come to it.
+    // user wait too. A limit or stop order doesn't: it waits for the price to come to it.
     let price: bigint | null = null;
     if (order.type === "market") {
       const tick = await latestTick(redis, order.symbol);
@@ -91,8 +99,8 @@ export function ordersRouter({ pool, redis, requireAuth, now = Date.now }: Order
         // Failures below throw, so the transaction (and the claimed key) rolls back and a retry
         // with the same key runs again. Only an order that was placed is saved.
         let placed: Order;
-        if (order.type === "limit") {
-          placed = await placeLimitOrder(client, userId, order);
+        if (order.type !== "market") {
+          placed = await placePendingOrder(client, userId, order);
         } else {
           if (price === null) throw new StalePriceError();
           placed = await fillMarketOrder(client, userId, order, price);

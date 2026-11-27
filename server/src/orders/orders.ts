@@ -16,12 +16,14 @@ export const MIN_ORDER_TOTAL = 100n;
 export type Side = "buy" | "sell";
 export type MarketOrder = { symbol: string; side: Side; quantity: bigint };
 
-/** An order as stored. price and total are set once it fills; limitPrice only on a limit order. */
+/** An order as stored. price and total are set once it fills; limitPrice and stopPrice only on those types. */
 export type Order = MarketOrder & {
   id: bigint;
-  type: "market" | "limit";
+  type: "market" | "limit" | "stop";
   status: "open" | "filled" | "cancelled";
   limitPrice: bigint | null;
+  /** The price a stop sell triggers at. */
+  stopPrice: bigint | null;
   price: bigint | null;
   total: bigint | null;
   currency: string;
@@ -37,6 +39,7 @@ type OrderRow = {
   status: Order["status"];
   quantity: bigint;
   limit_price: bigint | null;
+  stop_price: bigint | null;
   price: bigint | null;
   total: bigint | null;
   currency: string;
@@ -45,7 +48,7 @@ type OrderRow = {
 };
 
 export const ORDER_COLUMNS =
-  "id, symbol, side, type, status, quantity, limit_price, price, total, currency, created_at, closed_at";
+  "id, symbol, side, type, status, quantity, limit_price, stop_price, price, total, currency, created_at, closed_at";
 
 export function toOrder(row: OrderRow): Order {
   return {
@@ -56,6 +59,7 @@ export function toOrder(row: OrderRow): Order {
     status: row.status,
     quantity: row.quantity,
     limitPrice: row.limit_price,
+    stopPrice: row.stop_price,
     price: row.price,
     total: row.total,
     currency: row.currency,

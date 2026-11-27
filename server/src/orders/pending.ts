@@ -13,11 +13,18 @@ import {
   type Order,
 } from "./orders.ts";
 
-// See docs/design.md, "Orders". A limit buy fills once the price is at or below its limit, a limit
-// sell once it's at or above. While it waits, what it would spend sits in the user's hold account,
-// so two open orders can never be counting on the same cash or coins.
+// See docs/design.md, "Orders". Pending orders wait for the price to come to them:
+// - a limit buy fills once the price is at or below its limit, a limit sell once it's at or above;
+// - a stop sell (stop-loss) fills once the price falls to its stop, at whatever that tick's price is.
+// While an order waits, what it would spend sits in the user's hold account, so two open orders
+// can never be counting on the same cash or coins.
 
 export type LimitOrder = MarketOrder & { limitPrice: bigint };
+export type StopOrder = MarketOrder & { side: "sell"; stopPrice: bigint };
+export type PendingOrder = ({ type: "limit" } & LimitOrder) | ({ type: "stop" } & StopOrder);
+
+/** A stop buy can't be held for (its fill price is open-ended), so stops are sells only. */
+export class StopBuyError extends Error {}
 
 export class OrderNotOpenError extends Error {
   readonly order: Order;
@@ -38,12 +45,15 @@ function nonZero(lines: Line[]): Line[] {
 }
 
 /**
- * Places a limit order: moves its cost at the limit price (buy) or its coins (sell) from the
- * user's balance into their hold account and saves the order as open. Must run in a transaction.
- * Throws InsufficientFundsError when the user doesn't have it.
+ * Places a pending order: moves its cost at the limit price (limit buy) or its coins (any sell)
+ * from the user's balance into their hold account and saves the order as open. Must run in a
+ * transaction. Throws InsufficientFundsError when the user doesn't have it. The minimum order is
+ * checked at the limit or stop price.
  */
-export async function placeLimitOrder(client: pg.ClientBase, userId: bigint, order: LimitOrder): Promise<Order> {
-  const notional = orderTotal(order.quantity, order.limitPrice);
+export async function placePendingOrder(client: pg.ClientBase, userId: bigint, order: PendingOrder): Promise<Order> {
+  if (order.type === "stop" && order.side !== "sell") throw new StopBuyError();
+  const trigger = order.type === "limit" ? order.limitPrice : order.stopPrice;
+  const notional = orderTotal(order.quantity, trigger);
   if (notional < MIN_ORDER_TOTAL) throw new OrderTooSmallError();
 
   const asset = heldAsset(order);
@@ -52,7 +62,7 @@ export async function placeLimitOrder(client: pg.ClientBase, userId: bigint, ord
   const hold = await accountFor(client, userId, "hold", asset);
   const holdEntryId = await postEntry(client, {
     kind: "hold",
-    description: `Hold for limit ${order.side} ${order.symbol}`,
+    description: `Hold for ${order.type} ${order.side} ${order.symbol}`,
     lines: [
       { accountId: from, amount: -holdAmount },
       { accountId: hold, amount: holdAmount },
@@ -60,10 +70,22 @@ export async function placeLimitOrder(client: pg.ClientBase, userId: bigint, ord
   });
 
   const { rows } = await client.query(
-    `INSERT INTO orders (user_id, symbol, side, type, status, quantity, limit_price, currency, hold_amount, hold_entry_id)
-     VALUES ($1, $2, $3, 'limit', 'open', $4, $5, $6, $7, $8)
+    `INSERT INTO orders (user_id, symbol, side, type, status, quantity, limit_price, stop_price, currency,
+                         hold_amount, hold_entry_id)
+     VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8, $9, $10)
      RETURNING ${ORDER_COLUMNS}`,
-    [userId, order.symbol, order.side, order.quantity, order.limitPrice, QUOTE_CURRENCY, holdAmount, holdEntryId],
+    [
+      userId,
+      order.symbol,
+      order.side,
+      order.type,
+      order.quantity,
+      order.type === "limit" ? order.limitPrice : null,
+      order.type === "stop" ? order.stopPrice : null,
+      QUOTE_CURRENCY,
+      holdAmount,
+      holdEntryId,
+    ],
   );
   return toOrder(rows[0]);
 }
@@ -88,7 +110,7 @@ export async function cancelOrder(client: pg.ClientBase, userId: bigint, orderId
   const hold = await accountFor(client, userId, "hold", asset);
   const releaseEntryId = await postEntry(client, {
     kind: "release",
-    description: `Cancel limit ${order.side} ${order.symbol}`,
+    description: `Cancel ${order.type} ${order.side} ${order.symbol}`,
     lines: [
       { accountId: hold, amount: -holdAmount },
       { accountId: back, amount: holdAmount },
@@ -102,22 +124,27 @@ export async function cancelOrder(client: pg.ClientBase, userId: bigint, orderId
   return toOrder(updated.rows[0]);
 }
 
-/** Whether a limit order would fill at `price`. */
-export function crosses(order: { side: string; limitPrice: bigint | null }, price: bigint): boolean {
-  if (order.limitPrice === null) return false;
+type Trigger = { type: string; side: string; limitPrice: bigint | null; stopPrice: bigint | null };
+
+/** Whether a pending order would fill at `price`. */
+export function crosses(order: Trigger, price: bigint): boolean {
+  if (order.type === "stop") return order.side === "sell" && order.stopPrice !== null && price <= order.stopPrice;
+  if (order.type !== "limit" || order.limitPrice === null) return false;
   return order.side === "buy" ? price <= order.limitPrice : price >= order.limitPrice;
 }
 
 /**
- * Fills one open limit order at the tick's price, if it's still open, the price crosses its
- * limit, and it was placed before the tick. Must run in a transaction. Returns null if it skipped
+ * Fills one open pending order at the tick's price, if it's still open, the price crosses its
+ * limit or stop, and it was placed before the tick. Must run in a transaction. Returns null if it skipped
  * the order, including when another transaction (a cancel, another worker) has it locked: that one
  * decides, and if it lets go, the next tick tries again.
  *
- * The fill is at the tick's price, which is the limit or better. A buy held its cost at the limit,
- * so whatever the fill didn't spend goes back to cash in the same entry.
+ * The fill is at the tick's price. For a limit order that's the limit or better, and a buy held its
+ * cost at the limit, so whatever the fill didn't spend goes back to cash in the same entry. For a
+ * stop it can be below the stop when the price gaps down: a stop-loss limits a loss, it doesn't
+ * promise a price.
  */
-export async function fillLimitOrder(client: pg.ClientBase, orderId: bigint, tick: Tick): Promise<Order | null> {
+export async function fillPendingOrder(client: pg.ClientBase, orderId: bigint, tick: Tick): Promise<Order | null> {
   const { rows } = await client.query(
     `SELECT ${ORDER_COLUMNS}, user_id, hold_amount FROM orders
      WHERE id = $1 AND status = 'open' AND created_at <= to_timestamp($2::float8 / 1000)
@@ -151,7 +178,7 @@ export async function fillLimitOrder(client: pg.ClientBase, orderId: bigint, tic
         ];
   const entryId = await postEntry(client, {
     kind: "trade",
-    description: `Limit ${order.side} ${order.symbol}`,
+    description: `${order.type === "stop" ? "Stop" : "Limit"} ${order.side} ${order.symbol}`,
     lines: nonZero(lines),
   });
 
@@ -167,7 +194,7 @@ export async function fillLimitOrder(client: pg.ClientBase, orderId: bigint, tic
 const PAGE = 100;
 
 /**
- * Fills every open limit order in `tick.symbol` that the tick's price crosses, oldest first, one
+ * Fills every open pending order in `tick.symbol` that the tick's price crosses, oldest first, one
  * transaction per order so one bad order can't hold up the rest. If any order failed, throws once
  * the others are done, so the job is retried; orders that filled are no longer open and are skipped.
  */
@@ -179,13 +206,15 @@ export async function matchTick(pool: pg.Pool, tick: Tick): Promise<Order[]> {
     const { rows } = await pool.query<{ id: bigint }>(
       `SELECT id FROM orders
        WHERE status = 'open' AND symbol = $1 AND id > $3
-         AND ((side = 'buy' AND limit_price >= $2) OR (side = 'sell' AND limit_price <= $2))
+         AND ((type = 'limit' AND side = 'buy' AND limit_price >= $2)
+           OR (type = 'limit' AND side = 'sell' AND limit_price <= $2)
+           OR (type = 'stop' AND stop_price >= $2))
        ORDER BY id LIMIT ${PAGE}`,
       [tick.symbol, tick.price, after],
     );
     for (const { id } of rows) {
       try {
-        const order = await withTransaction(pool, (client) => fillLimitOrder(client, id, tick));
+        const order = await withTransaction(pool, (client) => fillPendingOrder(client, id, tick));
         if (order) filled.push(order);
       } catch (err) {
         errors.push(err);

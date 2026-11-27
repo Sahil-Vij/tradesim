@@ -8,7 +8,7 @@ import type pg from "pg";
 import { createApp } from "../src/app.ts";
 import { migrate } from "../src/db/migrate.ts";
 import { driftedAccounts, withTransaction } from "../src/ledger.ts";
-import { cancelOrder, crosses, matchTick } from "../src/orders/limit.ts";
+import { cancelOrder, crosses, matchTick } from "../src/orders/pending.ts";
 import { enqueueTick, matchQueue, startMatcher } from "../src/orders/matcher.ts";
 import { saveTick } from "../src/prices/store.ts";
 import { createTestPool, skipWithoutDb } from "./db.ts";
@@ -19,17 +19,26 @@ const coins = (n: bigint) => n * 100_000_000n;
 
 test("a limit buy crosses at or below its limit, a limit sell at or above", () => {
   const limitPrice = usd(900n);
-  assert.equal(crosses({ side: "buy", limitPrice }, usd(900n)), true);
-  assert.equal(crosses({ side: "buy", limitPrice }, usd(899n)), true);
-  assert.equal(crosses({ side: "buy", limitPrice }, usd(901n)), false);
-  assert.equal(crosses({ side: "sell", limitPrice }, usd(900n)), true);
-  assert.equal(crosses({ side: "sell", limitPrice }, usd(899n)), false);
-  assert.equal(crosses({ side: "buy", limitPrice: null }, usd(1n)), false);
+  const limit = (side: string) => ({ type: "limit", side, limitPrice, stopPrice: null });
+  assert.equal(crosses(limit("buy"), usd(900n)), true);
+  assert.equal(crosses(limit("buy"), usd(899n)), true);
+  assert.equal(crosses(limit("buy"), usd(901n)), false);
+  assert.equal(crosses(limit("sell"), usd(900n)), true);
+  assert.equal(crosses(limit("sell"), usd(899n)), false);
+  assert.equal(crosses({ ...limit("buy"), limitPrice: null }, usd(1n)), false);
+});
+
+test("a stop sell triggers once the price is at or below its stop", () => {
+  const stop = { type: "stop", side: "sell", limitPrice: null, stopPrice: usd(800n) };
+  assert.equal(crosses(stop, usd(801n)), false);
+  assert.equal(crosses(stop, usd(800n)), true);
+  assert.equal(crosses(stop, usd(500n)), true);
+  assert.equal(crosses({ ...stop, side: "buy" }, usd(500n)), false);
 });
 
 const skip = skipWithoutDb || skipWithoutRedis;
 
-describe("limit orders", { skip }, () => {
+describe("limit and stop orders", { skip }, () => {
   let pool: pg.Pool;
   let drop: () => Promise<void>;
   let redis: Redis;
@@ -183,8 +192,8 @@ describe("limit orders", { skip }, () => {
     assert.deepEqual(await decimal.json(), { error: "invalid_limit_price" });
     const tiny = await order(t, limitBuy(100_000n, usd(900n))); // 0.001 BTC at $900 = $0.90
     assert.deepEqual(await tiny.json(), { error: "order_too_small" });
-    const stop = await order(t, { ...limitBuy(coins(1n), usd(900n)), type: "stop" });
-    assert.deepEqual(await stop.json(), { error: "unsupported_order_type" });
+    const trailing = await order(t, { ...limitBuy(coins(1n), usd(900n)), type: "trailing_stop" });
+    assert.deepEqual(await trailing.json(), { error: "unsupported_order_type" });
     assert.deepEqual(await balances(t), { "cash USD": 1_000_000n });
   });
 
@@ -284,6 +293,87 @@ describe("limit orders", { skip }, () => {
       await queue.obliterate({ force: true });
       await queue.close();
     }
+  });
+
+  const stopSell = (quantity: bigint, stop: bigint) => ({
+    symbol: "BTC",
+    side: "sell",
+    type: "stop",
+    quantity: String(quantity),
+    stopPrice: String(stop),
+  });
+
+  test("a stop-loss holds the coins and sells at the tick's price once the price falls to the stop", async () => {
+    const t = await trader();
+    await order(t, { symbol: "BTC", side: "buy", quantity: String(coins(2n)) }); // $2,000 at $1,000
+    const res = await order(t, stopSell(coins(2n), usd(800n)));
+    assert.equal(res.status, 201);
+    const { order: placed } = await res.json();
+    assert.equal(placed.type, "stop");
+    assert.equal(placed.status, "open");
+    assert.equal(placed.stopPrice, String(usd(800n)));
+    assert.equal(placed.limitPrice, undefined);
+    assert.deepEqual(await balances(t), { "cash USD": 800_000n, "hold BTC": coins(2n), "holding BTC": 0n });
+
+    // A rise, or a fall that stays above the stop, does nothing.
+    assert.deepEqual(only(await matchTick(pool, tickAt(usd(1_100n))), placed.id), []);
+    assert.deepEqual(only(await matchTick(pool, tickAt(usd(801n))), placed.id), []);
+
+    // The price gaps past the stop: the sell happens at $760, not $800.
+    const [filled] = only(await matchTick(pool, tickAt(usd(760n))), placed.id);
+    assert.equal(filled!.status, "filled");
+    assert.equal(filled!.price, usd(760n));
+    assert.equal(filled!.total, 152_000n);
+    assert.deepEqual(await balances(t), { "cash USD": 800_000n + 152_000n, "hold BTC": 0n, "holding BTC": 0n });
+  });
+
+  test("a stop-loss fires on a tick exactly at its stop", async () => {
+    const t = await trader();
+    await order(t, { symbol: "BTC", side: "buy", quantity: String(coins(1n)) });
+    const { order: placed } = await (await order(t, stopSell(coins(1n), usd(800n)))).json();
+    const [filled] = only(await matchTick(pool, tickAt(usd(800n))), placed.id);
+    assert.equal(filled!.total, 80_000n);
+  });
+
+  test("a stop-loss and a limit sell can't both hold the same coins, and cancelling a stop gives them back", async () => {
+    const t = await trader();
+    await order(t, { symbol: "BTC", side: "buy", quantity: String(coins(1n)) });
+    const { order: stop } = await (await order(t, stopSell(coins(1n), usd(800n)))).json();
+    const takeProfit = await order(t, { ...limitBuy(coins(1n), usd(1_200n)), side: "sell" });
+    assert.deepEqual(await takeProfit.json(), { error: "insufficient_holdings" });
+
+    const cancelled = await cancel(t, stop.id);
+    assert.equal((await cancelled.json()).order.status, "cancelled");
+    assert.deepEqual(await balances(t), { "cash USD": 900_000n, "hold BTC": 0n, "holding BTC": coins(1n) });
+    assert.deepEqual(only(await matchTick(pool, tickAt(usd(700n))), stop.id), [], "a cancelled stop never fires");
+  });
+
+  test("bad stop orders are refused before anything is held", async () => {
+    const t = await trader();
+    await order(t, { symbol: "BTC", side: "buy", quantity: String(coins(1n)) });
+    const buy = await order(t, { ...stopSell(coins(1n), usd(1_100n)), side: "buy" });
+    assert.equal(buy.status, 400);
+    assert.deepEqual(await buy.json(), { error: "stop_orders_are_sells" });
+    const missing = await order(t, { symbol: "BTC", side: "sell", type: "stop", quantity: String(coins(1n)) });
+    assert.deepEqual(await missing.json(), { error: "invalid_stop_price" });
+    const zero = await order(t, stopSell(coins(1n), 0n));
+    assert.deepEqual(await zero.json(), { error: "invalid_stop_price" });
+    const tiny = await order(t, stopSell(100_000n, usd(800n))); // 0.001 BTC at $800 = $0.80
+    assert.deepEqual(await tiny.json(), { error: "order_too_small" });
+    const notHeld = await order(t, stopSell(coins(2n), usd(800n)));
+    assert.deepEqual(await notHeld.json(), { error: "insufficient_holdings" });
+    assert.deepEqual(await balances(t), { "cash USD": 900_000n, "holding BTC": coins(1n) });
+  });
+
+  test("a stop's idempotency key is tied to its stop price", async () => {
+    const t = await trader();
+    await order(t, { symbol: "BTC", side: "buy", quantity: String(coins(1n)) });
+    const key = crypto.randomUUID();
+    const first = await order(t, stopSell(coins(1n), usd(800n)), key);
+    const retry = await order(t, stopSell(coins(1n), usd(800n)), key);
+    assert.equal((await retry.json()).order.id, (await first.json()).order.id);
+    const moved = await order(t, stopSell(coins(1n), usd(750n)), key);
+    assert.deepEqual(await moved.json(), { error: "idempotency_key_reused" });
   });
 
   test("the ledger still balances", async () => {

@@ -1,7 +1,7 @@
 import { Queue, Worker } from "bullmq";
 import type pg from "pg";
 import type { Tick } from "../prices/price.ts";
-import { matchTick } from "./limit.ts";
+import { matchTick } from "./pending.ts";
 
 // See docs/design.md, "Orders". The price worker adds a job for every new tick; order workers take
 // jobs and fill the open orders that tick crosses. Any number of order workers can share the
