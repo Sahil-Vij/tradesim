@@ -55,8 +55,8 @@ Refresh tokens are random, stored only as a SHA-256 hash, and rotated on every u
 
 ## Orders
 
-- **Idempotency.** `POST /api/orders` requires an `Idempotency-Key` header. The key is unique per user. A repeat with the same key and body returns the original response; the same key with a different body is a `422`.
-- **Market orders** fill straight away at the cached price, and are refused if that price is more than 10 seconds old.
+- **Idempotency.** `POST /api/orders` requires an `Idempotency-Key` header. The key is unique per user. A repeat with the same key and body returns the original response, byte for byte, with `Idempotent-Replayed: true`; the same key with a different body is a `422`. The key is claimed with an insert at the start of the order's transaction, so a duplicate arriving at the same moment waits for the first to finish and then replays it. Only fills are saved: a failed order rolls back its key too, so a retry runs again.
+- **Market orders** fill straight away at the cached price, and are refused if that price is more than 10 seconds old. The smallest order is $1, so a tiny order can't round down to a cost of zero.
 - **Limit, stop-loss and bracket orders** are stored as pending. Each price tick queues a BullMQ job that finds orders whose condition is met and fills them, one transaction per order. A bracket is a parent buy plus two child sells; when one child fills, the other is cancelled in the same transaction.
 - **Reset.** A user can reset their portfolio to the starting balance once every 24 hours. Pending orders are cancelled first.
 

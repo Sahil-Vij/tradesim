@@ -2,6 +2,7 @@ import express, { type ErrorRequestHandler } from "express";
 import { createAuth, type AuthOptions } from "./auth/routes.ts";
 import type { Redis } from "ioredis";
 import { cashWallets } from "./ledger.ts";
+import { ordersRouter } from "./orders/routes.ts";
 import { PRICE_DECIMALS, STALE_AFTER_MS } from "./prices/price.ts";
 import { latestTicks } from "./prices/store.ts";
 
@@ -36,6 +37,8 @@ export function createApp(options: AppOptions) {
     const wallets = await cashWallets(pool, res.locals.userId);
     res.json({ wallets: wallets.map((w) => ({ asset: w.asset, balance: String(w.balance), decimals: w.decimals })) });
   });
+
+  app.use("/api/orders", ordersRouter({ pool, redis, requireAuth: auth.requireAuth, now }));
 
   // Public: prices aren't per-user. Same string-plus-decimals shape as wallets.
   app.get("/api/prices", async (_req, res) => {
