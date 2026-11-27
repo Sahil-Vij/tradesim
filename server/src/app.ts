@@ -1,7 +1,7 @@
 import express, { type ErrorRequestHandler } from "express";
 import { createAuth, type AuthOptions } from "./auth/routes.ts";
 import type { Redis } from "ioredis";
-import { cashWallets } from "./ledger.ts";
+import { cashWallets, holdings } from "./ledger.ts";
 import { ordersRouter } from "./orders/routes.ts";
 import { PRICE_DECIMALS, STALE_AFTER_MS } from "./prices/price.ts";
 import { latestTicks } from "./prices/store.ts";
@@ -36,6 +36,11 @@ export function createApp(options: AppOptions) {
   app.get("/api/wallets", auth.requireAuth, async (_req, res) => {
     const wallets = await cashWallets(pool, res.locals.userId);
     res.json({ wallets: wallets.map((w) => ({ asset: w.asset, balance: String(w.balance), decimals: w.decimals })) });
+  });
+
+  app.get("/api/holdings", auth.requireAuth, async (_req, res) => {
+    const rows = await holdings(pool, res.locals.userId);
+    res.json({ holdings: rows.map((h) => ({ asset: h.asset, quantity: String(h.quantity), decimals: h.decimals })) });
   });
 
   app.use("/api/orders", ordersRouter({ pool, redis, requireAuth: auth.requireAuth, now }));

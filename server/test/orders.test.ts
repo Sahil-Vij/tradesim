@@ -132,6 +132,22 @@ describe("POST /api/orders", { skip }, () => {
     assert.deepEqual(await never.json(), { error: "insufficient_holdings" });
   });
 
+  test("GET /api/holdings lists the coins held, and drops one sold to zero", async () => {
+    const token = await trader();
+    const get = async () =>
+      (await (await fetch(`${base}/api/holdings`, { headers: { authorization: `Bearer ${token}` } })).json()).holdings;
+    assert.deepEqual(await get(), []);
+    await order(token, { symbol: "BTC", side: "buy", quantity: "150000000" });
+    await order(token, { symbol: "DOGE", side: "buy", quantity: "10000000000" });
+    assert.deepEqual(await get(), [
+      { asset: "BTC", quantity: "150000000", decimals: 8 },
+      { asset: "DOGE", quantity: "10000000000", decimals: 8 },
+    ]);
+    await order(token, { symbol: "DOGE", side: "sell", quantity: "10000000000" });
+    assert.deepEqual(await get(), [{ asset: "BTC", quantity: "150000000", decimals: 8 }]);
+    assert.equal((await fetch(`${base}/api/holdings`)).status, 401);
+  });
+
   test("refuses to buy more than the wallet holds, and changes nothing", async () => {
     const token = await trader();
     const res = await order(token, { symbol: "BTC", side: "buy", quantity: "1000500000" }); // 10.005 BTC = $10,005
