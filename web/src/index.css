@@ -70,7 +70,7 @@
 .roll-strip {
   display: flex;
   flex-direction: column;
-  transition: transform 550ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {

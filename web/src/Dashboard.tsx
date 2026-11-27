@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, type Holding, type Order, type Wallet } from "./api.ts";
 import { formatInr, formatPrice, formatUnits, formatUsd, orderTotal } from "./money.ts";
+import { CandleChart } from "./CandleChart.tsx";
 import { RollingNumber } from "./RollingNumber.tsx";
 import { Sparkline } from "./Sparkline.tsx";
 import { TradePanel } from "./TradePanel.tsx";
@@ -93,6 +94,7 @@ export function Dashboard() {
 
       <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
         <div className="min-w-0 space-y-6">
+          <CandleChart symbol={selected} name={names[selected] ?? selected} price={priceOf(selected)} />
           <section
             aria-label="Markets"
             className="animate-rise overflow-hidden rounded-xl border border-rule bg-slate [animation-delay:80ms]"
@@ -189,7 +191,7 @@ export function Dashboard() {
             symbol={selected}
             name={names[selected] ?? selected}
             price={priceOf(selected)}
-            cash={usd}
+            cash={wallets ? usd : null}
             held={heldOf(selected)}
             onFilled={onFilled}
           />

@@ -15,12 +15,14 @@ type Props = {
   symbol: string;
   name: string;
   price: LivePrice | undefined;
-  cash: bigint;
+  /** Null until the wallet has loaded. */
+  cash: bigint | null;
   held: bigint;
   onFilled: (order: Order) => void;
 };
 
-export function TradePanel({ symbol, name, price, cash, held, onFilled }: Props) {
+export function TradePanel({ symbol, name, price, cash: loadedCash, held, onFilled }: Props) {
+  const cash = loadedCash ?? 0n;
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
@@ -158,7 +160,7 @@ export function TradePanel({ symbol, name, price, cash, held, onFilled }: Props)
       <dl className="mt-5 space-y-2 border-t border-rule pt-4 text-sm">
         <div className="flex justify-between text-fog">
           <dt>{buying ? "Cash available" : "You hold"}</dt>
-          <dd>{buying ? <RollingNumber value={formatUsd(cash)} /> : `${formatUnits(held, 8)} ${symbol}`}</dd>
+          <dd>{buying ? (loadedCash === null ? "—" : <RollingNumber value={formatUsd(cash)} />) : `${formatUnits(held, 8)} ${symbol}`}</dd>
         </div>
         <div className="flex items-baseline justify-between">
           <dt className="text-fog">{buying ? "You pay about" : "You get about"}</dt>
