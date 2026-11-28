@@ -5,21 +5,24 @@ import { InsufficientFundsError, withTransaction } from "../ledger.ts";
 import { PRICE_DECIMALS, STALE_AFTER_MS } from "../prices/price.ts";
 import { latestTick } from "../prices/store.ts";
 import { claimKey, requestHash, saveResponse, validKey, type Saved } from "./idempotency.ts";
-import { cancelOrder, OrderNotOpenError, placePendingOrder, type PendingOrder } from "./pending.ts";
+import { BracketPricesError, cancelOrder, OrderNotOpenError, placePendingOrder, type PendingOrder } from "./pending.ts";
 import { fillMarketOrder, OrderTooSmallError, TRADABLE, type MarketOrder, type Order } from "./orders.ts";
 
 export type OrderOptions = { pool: pg.Pool; redis: Redis; requireAuth: RequestHandler; now?: () => number };
 
 // Quantities come in as whole numbers of 10^-8 of a coin, as strings, like every amount in the API.
-// Limit and stop prices likewise, in 10^-8 of a dollar per coin.
+// Limit, stop, take-profit and stop-loss prices likewise, in 10^-8 of a dollar per coin.
 const AMOUNT = /^[1-9]\d{0,17}$/;
 const ORDER_ID = /^[1-9]\d{0,17}$/;
 
 type Parsed = ({ type: "market" } & MarketOrder) | PendingOrder;
 
 function parseOrder(body: unknown): Parsed | { error: string } {
-  const { symbol, side, type = "market", quantity, limitPrice, stopPrice } = (body ?? {}) as Record<string, unknown>;
-  if (type !== "market" && type !== "limit" && type !== "stop") return { error: "unsupported_order_type" };
+  const { symbol, side, type = "market", quantity, limitPrice, stopPrice, takeProfitPrice, stopLossPrice } = (body ??
+    {}) as Record<string, unknown>;
+  if (type !== "market" && type !== "limit" && type !== "stop" && type !== "bracket") {
+    return { error: "unsupported_order_type" };
+  }
   if (typeof symbol !== "string" || !TRADABLE.has(symbol)) return { error: "unknown_symbol" };
   if (side !== "buy" && side !== "sell") return { error: "invalid_side" };
   if (typeof quantity !== "string" || !AMOUNT.test(quantity)) return { error: "invalid_quantity" };
@@ -31,7 +34,25 @@ function parseOrder(body: unknown): Parsed | { error: string } {
     return { type, symbol, side, quantity: BigInt(quantity), stopPrice: BigInt(stopPrice) };
   }
   if (typeof limitPrice !== "string" || !AMOUNT.test(limitPrice)) return { error: "invalid_limit_price" };
-  return { type, symbol, side, quantity: BigInt(quantity), limitPrice: BigInt(limitPrice) };
+  if (type === "limit") return { type, symbol, side, quantity: BigInt(quantity), limitPrice: BigInt(limitPrice) };
+
+  // A bracket buys, then sells at whichever comes first: the take profit above, or the stop loss below.
+  if (side !== "buy") return { error: "bracket_orders_are_buys" };
+  if (typeof takeProfitPrice !== "string" || !AMOUNT.test(takeProfitPrice)) return { error: "invalid_take_profit_price" };
+  if (typeof stopLossPrice !== "string" || !AMOUNT.test(stopLossPrice)) return { error: "invalid_stop_loss_price" };
+  const bracket = {
+    type,
+    symbol,
+    side,
+    quantity: BigInt(quantity),
+    limitPrice: BigInt(limitPrice),
+    takeProfitPrice: BigInt(takeProfitPrice),
+    stopLossPrice: BigInt(stopLossPrice),
+  } as const;
+  if (!(bracket.stopLossPrice < bracket.limitPrice && bracket.limitPrice < bracket.takeProfitPrice)) {
+    return { error: "invalid_bracket_prices" };
+  }
+  return bracket;
 }
 
 /** The fields that make two requests "the same order", for the idempotency check. */
@@ -40,6 +61,14 @@ function hashOf(order: Parsed): Buffer {
   // Market orders keep the fields they always had, so keys saved before limit orders still match.
   if (order.type === "limit") Object.assign(fields, { type: "limit", limitPrice: String(order.limitPrice) });
   if (order.type === "stop") Object.assign(fields, { type: "stop", stopPrice: String(order.stopPrice) });
+  if (order.type === "bracket") {
+    Object.assign(fields, {
+      type: "bracket",
+      limitPrice: String(order.limitPrice),
+      takeProfitPrice: String(order.takeProfitPrice),
+      stopLossPrice: String(order.stopLossPrice),
+    });
+  }
   return requestHash(fields);
 }
 
@@ -54,8 +83,12 @@ function orderJson(order: Order) {
     status: order.status,
     quantity: String(order.quantity),
     quantityDecimals: 8,
-    ...(order.type === "limit" ? { limitPrice: str(order.limitPrice) } : {}),
+    ...(order.type === "limit" || order.type === "bracket" ? { limitPrice: str(order.limitPrice) } : {}),
     ...(order.type === "stop" ? { stopPrice: str(order.stopPrice) } : {}),
+    ...(order.type === "bracket"
+      ? { takeProfitPrice: str(order.takeProfitPrice), stopLossPrice: str(order.stopLossPrice) }
+      : {}),
+    ...(order.parentId !== null ? { parentId: String(order.parentId) } : {}),
     price: str(order.price),
     priceDecimals: PRICE_DECIMALS,
     total: str(order.total),
@@ -116,6 +149,10 @@ export function ordersRouter({ pool, redis, requireAuth, now = Date.now }: Order
       }
       if (err instanceof OrderTooSmallError) {
         res.status(422).json({ error: "order_too_small" });
+        return;
+      }
+      if (err instanceof BracketPricesError) {
+        res.status(400).json({ error: "invalid_bracket_prices" });
         return;
       }
       if (err instanceof StalePriceError) {

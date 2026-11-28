@@ -16,14 +16,21 @@ export const MIN_ORDER_TOTAL = 100n;
 export type Side = "buy" | "sell";
 export type MarketOrder = { symbol: string; side: Side; quantity: bigint };
 
-/** An order as stored. price and total are set once it fills; limitPrice and stopPrice only on those types. */
+/**
+ * An order as stored. price and total are set once it fills; limitPrice and stopPrice only on those
+ * types. A bracket has a limitPrice like a limit buy, plus the take-profit and stop-loss prices its
+ * two child sells are created with; each child has the bracket's id as parentId.
+ */
 export type Order = MarketOrder & {
   id: bigint;
-  type: "market" | "limit" | "stop";
+  type: "market" | "limit" | "stop" | "bracket";
   status: "open" | "filled" | "cancelled";
   limitPrice: bigint | null;
   /** The price a stop sell triggers at. */
   stopPrice: bigint | null;
+  takeProfitPrice: bigint | null;
+  stopLossPrice: bigint | null;
+  parentId: bigint | null;
   price: bigint | null;
   total: bigint | null;
   currency: string;
@@ -40,6 +47,9 @@ type OrderRow = {
   quantity: bigint;
   limit_price: bigint | null;
   stop_price: bigint | null;
+  take_profit_price: bigint | null;
+  stop_loss_price: bigint | null;
+  parent_id: bigint | null;
   price: bigint | null;
   total: bigint | null;
   currency: string;
@@ -48,7 +58,8 @@ type OrderRow = {
 };
 
 export const ORDER_COLUMNS =
-  "id, symbol, side, type, status, quantity, limit_price, stop_price, price, total, currency, created_at, closed_at";
+  "id, symbol, side, type, status, quantity, limit_price, stop_price, take_profit_price, stop_loss_price, parent_id, " +
+  "price, total, currency, created_at, closed_at";
 
 export function toOrder(row: OrderRow): Order {
   return {
@@ -60,6 +71,9 @@ export function toOrder(row: OrderRow): Order {
     quantity: row.quantity,
     limitPrice: row.limit_price,
     stopPrice: row.stop_price,
+    takeProfitPrice: row.take_profit_price,
+    stopLossPrice: row.stop_loss_price,
+    parentId: row.parent_id,
     price: row.price,
     total: row.total,
     currency: row.currency,

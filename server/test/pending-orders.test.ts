@@ -281,8 +281,12 @@ describe("limit and stop orders", { skip }, () => {
       const tick = tickAt(usd(890n));
       await enqueueTick(queue, tick);
       await enqueueTick(queue, tick); // the same tick twice is one job
+      // The order fills partway through the job, which goes on to match other tests' orders, so
+      // wait for the job to finish rather than for the order to change.
       const deadline = Date.now() + 10_000;
-      while ((await status(placed.id)) === "open" && Date.now() < deadline) {
+      for (;;) {
+        const { completed = 0, failed = 0 } = await queue.getJobCounts("completed", "failed");
+        if (completed + failed > 0 || Date.now() > deadline) break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       assert.equal(await status(placed.id), "filled");
@@ -373,6 +377,170 @@ describe("limit and stop orders", { skip }, () => {
     const retry = await order(t, stopSell(coins(1n), usd(800n)), key);
     assert.equal((await retry.json()).order.id, (await first.json()).order.id);
     const moved = await order(t, stopSell(coins(1n), usd(750n)), key);
+    assert.deepEqual(await moved.json(), { error: "idempotency_key_reused" });
+  });
+
+  // Buy 1 BTC at up to $1,000; sell at $1,200 (take profit) or once it falls to $800 (stop loss).
+  const bracket = (overrides: object = {}) => ({
+    symbol: "BTC",
+    side: "buy",
+    type: "bracket",
+    quantity: String(coins(1n)),
+    limitPrice: String(usd(1_000n)),
+    takeProfitPrice: String(usd(1_200n)),
+    stopLossPrice: String(usd(800n)),
+    ...overrides,
+  });
+  async function children(parentId: string) {
+    const { rows } = await pool.query(
+      "SELECT id, type, status, limit_price, stop_price, release_entry_id FROM orders WHERE parent_id = $1 ORDER BY id",
+      [parentId],
+    );
+    return rows;
+  }
+  /** Places a bracket and fills it at `price` with a tick a second from now. Returns it and the next tick's time. */
+  async function filledBracket(t: Trader, price = usd(950n)) {
+    const { order: placed } = await (await order(t, bracket())).json();
+    const time = Date.now() + 1_000;
+    const fills = only(await matchTick(pool, tickAt(price, time)), placed.id);
+    assert.equal(fills.length, 1);
+    return { placed, next: time + 1_000 };
+  }
+
+  test("a bracket waits like a limit buy, holding its cost, and can be cancelled before it fills", async () => {
+    const t = await trader();
+    const res = await order(t, bracket());
+    assert.equal(res.status, 201);
+    const { order: placed } = await res.json();
+    assert.equal(placed.type, "bracket");
+    assert.equal(placed.status, "open");
+    assert.equal(placed.limitPrice, String(usd(1_000n)));
+    assert.equal(placed.takeProfitPrice, String(usd(1_200n)));
+    assert.equal(placed.stopLossPrice, String(usd(800n)));
+    assert.equal(placed.parentId, undefined);
+    assert.deepEqual(await balances(t), { "cash USD": 900_000n, "hold USD": 100_000n });
+
+    // Above the limit nothing happens, however far it moves.
+    assert.deepEqual(only(await matchTick(pool, tickAt(usd(1_300n))), placed.id), []);
+    assert.equal((await cancel(t, placed.id)).status, 200);
+    assert.deepEqual(await balances(t), { "cash USD": 1_000_000n, "hold USD": 0n });
+    assert.deepEqual(await children(placed.id), []);
+  });
+
+  test("when a bracket fills, its coins go on hold for a take-profit and a stop-loss sell", async () => {
+    const t = await trader();
+    const { placed } = await filledBracket(t, usd(950n));
+    // Held $1,000, spent $950, $50 back. The coin is on hold, not free to sell.
+    assert.deepEqual(await balances(t), { "cash USD": 905_000n, "hold BTC": coins(1n), "hold USD": 0n, "holding BTC": 0n });
+    const kids = await children(placed.id);
+    assert.deepEqual(
+      kids.map((k) => [k.type, k.status, k.limit_price, k.stop_price]),
+      [
+        ["limit", "open", usd(1_200n), null],
+        ["stop", "open", null, usd(800n)],
+      ],
+    );
+    const market = await order(t, { symbol: "BTC", side: "sell", quantity: "1000000" });
+    assert.deepEqual(await market.json(), { error: "insufficient_holdings" });
+    assert.equal((await cancel(t, placed.id)).status, 409, "the bracket itself is filled; cancel a child instead");
+  });
+
+  test("the take profit filling cancels the stop loss, in the same entry", async () => {
+    const t = await trader();
+    const { placed, next } = await filledBracket(t);
+    const [target, stop] = await children(placed.id);
+    const fills = only(await matchTick(pool, tickAt(usd(1_250n), next)), String(target.id));
+    assert.equal(fills[0]!.price, usd(1_250n));
+    assert.equal(fills[0]!.parentId, BigInt(placed.id));
+
+    const [after1, after2] = await children(placed.id);
+    assert.equal(after1.status, "filled");
+    assert.equal(after2.status, "cancelled");
+    const { rows } = await pool.query("SELECT entry_id FROM orders WHERE id = $1", [target.id]);
+    assert.equal(after2.release_entry_id, rows[0].entry_id);
+    // Bought for $950, sold for $1,250.
+    assert.deepEqual(await balances(t), { "cash USD": 1_030_000n, "hold BTC": 0n, "hold USD": 0n, "holding BTC": 0n });
+    assert.deepEqual(only(await matchTick(pool, tickAt(usd(700n), next + 1_000)), String(stop.id)), []);
+  });
+
+  test("the stop loss filling cancels the take profit; the tick that filled the bracket can't fire it", async () => {
+    const t = await trader();
+    // The price gaps straight through the stop: the bracket buys at $790, below its $800 stop.
+    const { placed, next } = await filledBracket(t, usd(790n));
+    assert.deepEqual(
+      (await children(placed.id)).map((k) => k.status),
+      ["open", "open"],
+    );
+    const [target, stop] = await children(placed.id);
+    const [filled] = only(await matchTick(pool, tickAt(usd(790n), next)), String(stop.id));
+    assert.equal(filled!.status, "filled");
+    assert.equal((await children(placed.id))[0].status, "cancelled");
+    assert.equal((await cancel(t, String(target.id))).status, 409);
+    assert.deepEqual(await balances(t), { "cash USD": 1_000_000n, "hold BTC": 0n, "hold USD": 0n, "holding BTC": 0n });
+  });
+
+  test("cancelling either child cancels both and gives the coins back once", async () => {
+    const t = await trader();
+    const { placed } = await filledBracket(t);
+    const [target] = await children(placed.id);
+    const res = await cancel(t, String(target.id));
+    assert.equal(res.status, 200);
+    const body = (await res.json()).order;
+    assert.equal(body.status, "cancelled");
+    assert.equal(body.parentId, placed.id);
+    const kids = await children(placed.id);
+    assert.deepEqual(kids.map((k) => k.status), ["cancelled", "cancelled"]);
+    assert.equal(kids[0].release_entry_id, kids[1].release_entry_id);
+    assert.deepEqual(await balances(t), { "cash USD": 905_000n, "hold BTC": 0n, "hold USD": 0n, "holding BTC": coins(1n) });
+  });
+
+  test("two ticks racing for the two children: exactly one fills", async () => {
+    for (let round = 0; round < 15; round++) {
+      const t = await trader();
+      const { placed, next } = await filledBracket(t);
+      // One worker sees the price spike to the target while another sees it drop to the stop.
+      await Promise.all([matchTick(pool, tickAt(usd(1_300n), next)), matchTick(pool, tickAt(usd(700n), next))]);
+      const statuses = (await children(placed.id)).map((k) => k.status).sort();
+      // A tick that lost the race skips the locked order, so neither may have filled yet; the next tick decides.
+      if (!statuses.includes("filled")) {
+        assert.deepEqual(statuses, ["open", "open"], `round ${round}`);
+        await matchTick(pool, tickAt(usd(1_300n), next + 1_000));
+      }
+      assert.deepEqual((await children(placed.id)).map((k) => k.status).sort(), ["cancelled", "filled"], `round ${round}`);
+      const b = await balances(t);
+      assert.equal(b["hold BTC"], 0n);
+      assert.ok(b["cash USD"] === 905_000n + 130_000n || b["cash USD"] === 905_000n + 70_000n, `round ${round}`);
+    }
+    assert.deepEqual(await withTransaction(pool, driftedAccounts), []);
+  });
+
+  test("bad brackets are refused before anything is held", async () => {
+    const t = await trader();
+    const cases: Array<[object, string]> = [
+      [{ side: "sell" }, "bracket_orders_are_buys"],
+      [{ takeProfitPrice: undefined }, "invalid_take_profit_price"],
+      [{ stopLossPrice: "8.5" }, "invalid_stop_loss_price"],
+      [{ limitPrice: undefined }, "invalid_limit_price"],
+      [{ takeProfitPrice: String(usd(1_000n)) }, "invalid_bracket_prices"],
+      [{ stopLossPrice: String(usd(1_100n)) }, "invalid_bracket_prices"],
+    ];
+    for (const [overrides, error] of cases) {
+      const res = await order(t, bracket(overrides));
+      assert.equal(res.status, 400, error);
+      assert.deepEqual(await res.json(), { error });
+    }
+    const tiny = await order(t, bracket({ quantity: "50000" })); // 0.0005 BTC at $1,000 = $0.50
+    assert.deepEqual(await tiny.json(), { error: "order_too_small" });
+    assert.deepEqual(await balances(t), { "cash USD": 1_000_000n });
+  });
+
+  test("a bracket's idempotency key covers its take profit and stop loss", async () => {
+    const t = await trader();
+    const key = crypto.randomUUID();
+    const first = await (await order(t, bracket(), key)).json();
+    const retry = await order(t, bracket(), key);
+    assert.equal((await retry.json()).order.id, first.order.id);
+    const moved = await order(t, bracket({ stopLossPrice: String(usd(750n)) }), key);
     assert.deepEqual(await moved.json(), { error: "idempotency_key_reused" });
   });
 
