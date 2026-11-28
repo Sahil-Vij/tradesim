@@ -6,7 +6,7 @@ test("reads as plain text, and moves each digit's column to that digit", () => {
   const { container, rerender } = render(<RollingNumber value="$60,695.63" />);
   expect(screen.getByText("$60,695.63")).toBeInTheDocument();
   const strips = () => [...container.querySelectorAll<HTMLElement>(".roll-strip")].map((s) => s.style.transform);
-  expect(strips()).toEqual(["6", "0", "6", "9", "5", "6", "3"].map((d) => `translateY(-${Number(d) * 10}%)`));
+  expect(strips()).toEqual(["6", "0", "6", "9", "5", "6", "3"].map((d) => `translateY(${Number(d) * -10}%)`));
 
   rerender(<RollingNumber value="$60,695.71" />);
   expect(strips().slice(-2)).toEqual(["translateY(-70%)", "translateY(-10%)"]);
