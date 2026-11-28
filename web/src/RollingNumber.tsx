@@ -17,7 +17,7 @@ export function RollingNumber({ value, className = "" }: { value: string; classN
           if (!/\d/.test(char)) return <span key={`c${key}`}>{char}</span>;
           return (
             <span key={`d${key}`} className="roll-digit">
-              <span className="roll-strip" style={{ transform: `translateY(-${Number(char) * 10}%)` }}>
+              <span className="roll-strip" style={{ transform: `translateY(${Number(char) * -10}%)` }}>
                 {DIGITS.map((d) => (
                   <span key={d}>{d}</span>
                 ))}
